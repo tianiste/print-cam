@@ -68,20 +68,3 @@ func TestTURNSharedSecretCredentials(t *testing.T) {
 		t.Fatal("expected ephemeral TURN username and credential")
 	}
 }
-
-func TestParseEnvLine(t *testing.T) {
-	key, value, ok := parseEnvLine(`DATABASE_URL="postgres://user:pass@example.test/db?sslmode=require"`)
-	if !ok {
-		t.Fatal("expected env line to parse")
-	}
-	if key != "DATABASE_URL" {
-		t.Fatalf("unexpected key %q", key)
-	}
-	if value != "postgres://user:pass@example.test/db?sslmode=require" {
-		t.Fatalf("unexpected value %q", value)
-	}
-	_, _, ok = parseEnvLine("# DATABASE_URL=hidden")
-	if ok {
-		t.Fatal("comment parsed as env line")
-	}
-}

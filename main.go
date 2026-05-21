@@ -31,6 +31,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/joho/godotenv"
 	"golang.org/x/crypto/argon2"
 )
 
@@ -46,8 +47,8 @@ var (
 )
 
 func main() {
-	err := loadDotEnv(".env")
-	if err != nil {
+	err := godotenv.Load()
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		slog.Warn("load .env failed", "error", err)
 	}
 	cfg := loadConfig()
@@ -134,48 +135,6 @@ func loadConfig() config {
 		BootstrapPass:  getenv("BOOTSTRAP_PASSWORD", "change-me-now"),
 		BootstrapTOTP:  getenv("BOOTSTRAP_TOTP_SECRET", "JBSWY3DPEHPK3PXP"),
 	}
-}
-
-func loadDotEnv(path string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		key, value, ok := parseEnvLine(line)
-		if !ok {
-			continue
-		}
-		if _, exists := os.LookupEnv(key); exists {
-			continue
-		}
-		err = os.Setenv(key, value)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func parseEnvLine(line string) (string, string, bool) {
-	line = strings.TrimSpace(line)
-	if line == "" || strings.HasPrefix(line, "#") {
-		return "", "", false
-	}
-	key, value, ok := strings.Cut(line, "=")
-	if !ok {
-		return "", "", false
-	}
-	key = strings.TrimSpace(key)
-	if key == "" || strings.ContainsAny(key, " \t") {
-		return "", "", false
-	}
-	value = strings.TrimSpace(value)
-	value = strings.Trim(value, `"'`)
-	return key, value, true
 }
 
 func getenv(key, fallback string) string {
