@@ -41,12 +41,3 @@ CREATE TABLE IF NOT EXISTS audit_events (
 CREATE INDEX IF NOT EXISTS audit_events_user_id_idx ON audit_events(user_id);
 CREATE INDEX IF NOT EXISTS audit_events_camera_id_idx ON audit_events(camera_id);
 CREATE INDEX IF NOT EXISTS audit_events_created_at_idx ON audit_events(created_at);
-
-CREATE TABLE IF NOT EXISTS rate_limit_events (
-    id TEXT PRIMARY KEY,
-    key TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS rate_limit_events_key_created_at_idx ON rate_limit_events(key, created_at);
-CREATE INDEX IF NOT EXISTS rate_limit_events_created_at_idx ON rate_limit_events(created_at);

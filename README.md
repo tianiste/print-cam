@@ -30,6 +30,8 @@ app.
 - `DATABASE_URL`: Neon Postgres connection string, required
 - `PUBLIC_ORIGIN`: expected browser origin for WebSocket checks, default
   `http://localhost:8080`
+- `FRONTEND_ORIGINS`: comma-separated API/WebSocket origins for the future
+  frontend, default `http://localhost:5173`
 - `SESSION_SECRET`: HMAC key for signed login cookies
 - `TURN_URLS`: comma-separated STUN/TURN URLs, default
   `stun:stun.l.google.com:19302`
@@ -47,6 +49,10 @@ The media stream is never handled by the Go server. The host browser captures th
 camera and sends encrypted WebRTC media directly to the viewer, using TURN relay
 when the browser ICE negotiation needs it.
 
-On startup the server creates missing Postgres tables and idempotently seeds the
-bootstrap user plus one default camera. The media stream is still never stored in
-Postgres.
+On startup the server runs embedded SQL migrations from `migrations/`,
+idempotently seeds the bootstrap user plus one default camera, cleans up expired
+sessions, and starts health endpoints at `/healthz` and `/readyz`. The media
+stream is still never stored in Postgres.
+
+WebSocket signaling uses `nhooyr.io/websocket`; video remains browser-to-browser
+WebRTC.
