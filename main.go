@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 
 	"github.com/pion/webrtc/v4"
 )
+
+var peers sync.Map
 
 func main() {
 	http.HandleFunc("/", index)
@@ -28,15 +31,27 @@ func offer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{
-		ICEServers: []webrtc.ICEServer{
-			{URLs: []string{"stun:stun.l.google.com:19302"}},
-		},
-	})
+	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	peerID := fmt.Sprintf("%p", pc)
+	peers.Store(peerID, pc)
+
+	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		log.Println("peer connection state:", state)
+
+		switch state {
+		case webrtc.PeerConnectionStateFailed,
+			webrtc.PeerConnectionStateClosed,
+			webrtc.PeerConnectionStateDisconnected:
+			peers.Delete(peerID)
+			if err := pc.Close(); err != nil {
+				log.Println("close peer connection:", err)
+			}
+		}
+	})
 
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
 		log.Println("data channel opened:", dc.Label())
@@ -71,7 +86,11 @@ func offer(w http.ResponseWriter, r *http.Request) {
 	<-webrtc.GatheringCompletePromise(pc)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(pc.LocalDescription())
+	if err := json.NewEncoder(w).Encode(pc.LocalDescription()); err != nil {
+		peers.Delete(peerID)
+		log.Println("write answer:", err)
+		return
+	}
 
 	fmt.Println("WebRTC connection answered")
 }

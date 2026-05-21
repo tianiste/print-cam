@@ -9,6 +9,7 @@
     <pre id="log"></pre>
 
     <script>
+      let pc;
       let dc;
 
       function log(msg) {
@@ -16,51 +17,75 @@
       }
 
       async function connect() {
-        const pc = new RTCPeerConnection({
-          iceServers: [
-            { urls: "stun:stun.l.google.com:19302" }
-          ]
-        });
+        try {
+          pc = new RTCPeerConnection();
 
-        dc = pc.createDataChannel("chat");
-
-        dc.onopen = () => {
-          log("data channel open");
-          dc.send("hello from browser");
-        };
-
-        dc.onmessage = event => {
-          log("Go says: " + event.data);
-        };
-
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-
-        await new Promise(resolve => {
-          if (pc.iceGatheringState === "complete") resolve();
-          pc.onicegatheringstatechange = () => {
-            if (pc.iceGatheringState === "complete") resolve();
+          pc.onconnectionstatechange = () => {
+            log("connection state: " + pc.connectionState);
           };
-        });
 
-        const res = await fetch("/offer", {
-          method: "POST",
-          body: JSON.stringify(pc.localDescription),
-          headers: {
-            "Content-Type": "application/json"
+          pc.oniceconnectionstatechange = () => {
+            log("ice state: " + pc.iceConnectionState);
+          };
+
+          dc = pc.createDataChannel("chat");
+
+          dc.onopen = () => {
+            log("data channel open");
+            dc.send("hello from browser");
+          };
+
+          dc.onclose = () => {
+            log("data channel closed");
+          };
+
+          dc.onerror = event => {
+            log("data channel error: " + event);
+          };
+
+          dc.onmessage = event => {
+            log("Go says: " + event.data);
+          };
+
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+
+          await new Promise(resolve => {
+            if (pc.iceGatheringState === "complete") resolve();
+            pc.onicegatheringstatechange = () => {
+              if (pc.iceGatheringState === "complete") resolve();
+            };
+          });
+
+          const res = await fetch("/offer", {
+            method: "POST",
+            body: JSON.stringify(pc.localDescription),
+            headers: {
+              "Content-Type": "application/json"
+            }
+          });
+
+          if (!res.ok) {
+            throw new Error(await res.text());
           }
-        });
 
-        const answer = await res.json();
-        await pc.setRemoteDescription(answer);
+          const answer = await res.json();
+          await pc.setRemoteDescription(answer);
 
-        log("connected");
+          log("answer received");
+        } catch (err) {
+          log("connect failed: " + err.message);
+        }
       }
 
       function sendMessage() {
+        if (!dc || dc.readyState !== "open") {
+          log("data channel is not open yet");
+          return;
+        }
+
         dc.send("printer status?");
       }
     </script>
   </body>
   </html>
-
