@@ -29,6 +29,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/argon2"
 )
 
@@ -44,11 +46,38 @@ var (
 )
 
 func main() {
+	err := loadDotEnv(".env")
+	if err != nil {
+		slog.Warn("load .env failed", "error", err)
+	}
 	cfg := loadConfig()
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	store := newMemoryStore()
+	if cfg.DatabaseURL == "" {
+		logger.Error("DATABASE_URL is required")
+		os.Exit(1)
+	}
 
-	err := bootstrap(store, cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	if err != nil {
+		logger.Error("database pool failed", "error", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+	err = pool.Ping(ctx)
+	if err != nil {
+		logger.Error("database ping failed", "error", err)
+		os.Exit(1)
+	}
+	store := newPostgresStore(pool)
+
+	err = initSchema(ctx, pool)
+	if err != nil {
+		logger.Error("schema init failed", "error", err)
+		os.Exit(1)
+	}
+	err = bootstrap(ctx, store, cfg)
 	if err != nil {
 		logger.Error("bootstrap failed", "error", err)
 		os.Exit(1)
@@ -72,6 +101,7 @@ func main() {
 type config struct {
 	Addr           string
 	PublicOrigin   string
+	DatabaseURL    string
 	SessionSecret  []byte
 	TURNSecret     string
 	TURNRealm      string
@@ -94,6 +124,7 @@ func loadConfig() config {
 	return config{
 		Addr:           getenv("ADDR", ":8080"),
 		PublicOrigin:   strings.TrimRight(origin, "/"),
+		DatabaseURL:    os.Getenv("DATABASE_URL"),
 		SessionSecret:  secret,
 		TURNSecret:     os.Getenv("TURN_SHARED_SECRET"),
 		TURNRealm:      getenv("TURN_REALM", "print-cam"),
@@ -103,6 +134,48 @@ func loadConfig() config {
 		BootstrapPass:  getenv("BOOTSTRAP_PASSWORD", "change-me-now"),
 		BootstrapTOTP:  getenv("BOOTSTRAP_TOTP_SECRET", "JBSWY3DPEHPK3PXP"),
 	}
+}
+
+func loadDotEnv(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, ok := parseEnvLine(line)
+		if !ok {
+			continue
+		}
+		if _, exists := os.LookupEnv(key); exists {
+			continue
+		}
+		err = os.Setenv(key, value)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func parseEnvLine(line string) (string, string, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") {
+		return "", "", false
+	}
+	key, value, ok := strings.Cut(line, "=")
+	if !ok {
+		return "", "", false
+	}
+	key = strings.TrimSpace(key)
+	if key == "" || strings.ContainsAny(key, " \t") {
+		return "", "", false
+	}
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, `"'`)
+	return key, value, true
 }
 
 func getenv(key, fallback string) string {
@@ -128,35 +201,54 @@ func splitCSV(raw string) []string {
 	return out
 }
 
-func bootstrap(store *memoryStore, cfg config) error {
+func bootstrap(ctx context.Context, store appStore, cfg config) error {
+	email := strings.ToLower(cfg.BootstrapEmail)
+	existing, err := store.UserByEmail(ctx, email)
+	if err == nil {
+		return seedDefaultCamera(ctx, store, existing.ID)
+	}
+	if !errors.Is(err, errNotFound) {
+		return err
+	}
 	passwordHash, err := hashPassword(cfg.BootstrapPass)
 	if err != nil {
 		return fmt.Errorf("hash bootstrap password: %w", err)
 	}
 	user := user{
 		ID:           randomID(),
-		Email:        strings.ToLower(cfg.BootstrapEmail),
+		Email:        email,
 		PasswordHash: passwordHash,
 		TOTPSecret:   normalizeBase32(cfg.BootstrapTOTP),
 		CreatedAt:    time.Now(),
 	}
-	err = store.CreateUser(context.Background(), user)
+	err = store.CreateUser(ctx, user)
 	if err != nil {
 		return err
 	}
-	return store.CreateCamera(context.Background(), user.ID, "Printer camera")
+	return seedDefaultCamera(ctx, store, user.ID)
+}
+
+func seedDefaultCamera(ctx context.Context, store appStore, userID string) error {
+	cameras, err := store.CamerasByUser(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if len(cameras) > 0 {
+		return nil
+	}
+	return store.CreateCamera(ctx, userID, "Printer camera")
 }
 
 type app struct {
 	cfg    config
 	log    *slog.Logger
-	store  *memoryStore
+	store  appStore
 	broker *broker
 	limit  *limiter
 	pages  *template.Template
 }
 
-func newApp(cfg config, logger *slog.Logger, store *memoryStore, broker *broker, limit *limiter) *app {
+func newApp(cfg config, logger *slog.Logger, store appStore, broker *broker, limit *limiter) *app {
 	return &app{
 		cfg:    cfg,
 		log:    logger,
@@ -221,7 +313,12 @@ func (a *app) handleCamerasPage(w http.ResponseWriter, r *http.Request, s sessio
 		methodNotAllowed(w)
 		return
 	}
-	cameras := a.store.CamerasByUser(r.Context(), s.UserID)
+	cameras, err := a.store.CamerasByUser(r.Context(), s.UserID)
+	if err != nil {
+		a.log.Error("load cameras failed", "error", err)
+		http.Error(w, "load cameras failed", http.StatusInternalServerError)
+		return
+	}
 	a.render(w, "cameras", map[string]any{"CSRF": a.ensureCSRF(w, r), "Cameras": cameras})
 }
 
@@ -301,7 +398,12 @@ func (a *app) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s := session{ID: randomID(), UserID: user.ID, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(24 * time.Hour)}
-	a.store.CreateSession(r.Context(), s)
+	err = a.store.CreateSession(r.Context(), s)
+	if err != nil {
+		a.log.Error("create session failed", "error", err)
+		http.Error(w, "login failed", http.StatusInternalServerError)
+		return
+	}
 	setCookie(w, sessionCookie, a.signToken("session", s.ID, 24*time.Hour), 24*time.Hour, a.cfg.SecureCookies, true)
 	setCookie(w, "print_cam_pending", "", -time.Hour, a.cfg.SecureCookies, true)
 	a.ensureCSRF(w, r)
@@ -318,7 +420,12 @@ func (a *app) handleLogout(w http.ResponseWriter, r *http.Request, s session) {
 		http.Error(w, "csrf rejected", http.StatusForbidden)
 		return
 	}
-	a.store.DeleteSession(r.Context(), s.ID)
+	err := a.store.DeleteSession(r.Context(), s.ID)
+	if err != nil {
+		a.log.Error("delete session failed", "error", err)
+		http.Error(w, "logout failed", http.StatusInternalServerError)
+		return
+	}
 	setCookie(w, sessionCookie, "", -time.Hour, a.cfg.SecureCookies, true)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -326,7 +433,13 @@ func (a *app) handleLogout(w http.ResponseWriter, r *http.Request, s session) {
 func (a *app) handleCamerasAPI(w http.ResponseWriter, r *http.Request, s session) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, a.store.CamerasByUser(r.Context(), s.UserID))
+		cameras, err := a.store.CamerasByUser(r.Context(), s.UserID)
+		if err != nil {
+			a.log.Error("load cameras failed", "error", err)
+			http.Error(w, "load cameras failed", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, cameras)
 	case http.MethodPost:
 		if !a.validCSRF(r) {
 			http.Error(w, "csrf rejected", http.StatusForbidden)
@@ -534,7 +647,10 @@ func (a *app) turnCredentials(userID string) turnResponse {
 }
 
 func (a *app) audit(ctx context.Context, userID, cameraID, event string) {
-	a.store.AddAudit(ctx, auditEvent{ID: randomID(), UserID: userID, CameraID: cameraID, Event: event, CreatedAt: time.Now()})
+	err := a.store.AddAudit(ctx, auditEvent{ID: randomID(), UserID: userID, CameraID: cameraID, Event: event, CreatedAt: time.Now()})
+	if err != nil {
+		a.log.Warn("audit write failed", "error", err)
+	}
 	a.log.Info("audit", "user", userID, "camera", cameraID, "event", event)
 }
 
@@ -574,6 +690,186 @@ type auditEvent struct {
 	CameraID  string
 	Event     string
 	CreatedAt time.Time
+}
+
+type appStore interface {
+	CreateUser(context.Context, user) error
+	UserByEmail(context.Context, string) (user, error)
+	User(context.Context, string) (user, error)
+	CreateCamera(context.Context, string, string) error
+	CamerasByUser(context.Context, string) ([]camera, error)
+	Camera(context.Context, string, string) (camera, error)
+	CreateSession(context.Context, session) error
+	Session(context.Context, string) (session, error)
+	DeleteSession(context.Context, string) error
+	AddAudit(context.Context, auditEvent) error
+}
+
+type postgresStore struct {
+	db *pgxpool.Pool
+}
+
+func newPostgresStore(db *pgxpool.Pool) *postgresStore {
+	return &postgresStore{db: db}
+}
+
+func initSchema(ctx context.Context, db *pgxpool.Pool) error {
+	for _, stmt := range schemaStatements {
+		_, err := db.Exec(ctx, stmt)
+		if err != nil {
+			return fmt.Errorf("execute schema statement: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *postgresStore) CreateUser(ctx context.Context, u user) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO users (id, email, password_hash, created_at)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (email) DO NOTHING
+	`, u.ID, u.Email, u.PasswordHash, u.CreatedAt)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return tx.Commit(ctx)
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO user_totp_secrets (user_id, secret, created_at)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (user_id) DO NOTHING
+	`, u.ID, u.TOTPSecret, u.CreatedAt)
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *postgresStore) UserByEmail(ctx context.Context, email string) (user, error) {
+	return s.scanUser(ctx, `
+		SELECT u.id, u.email, u.password_hash, COALESCE(t.secret, ''), u.created_at
+		FROM users u
+		LEFT JOIN user_totp_secrets t ON t.user_id = u.id
+		WHERE u.email = $1
+	`, email)
+}
+
+func (s *postgresStore) User(ctx context.Context, id string) (user, error) {
+	return s.scanUser(ctx, `
+		SELECT u.id, u.email, u.password_hash, COALESCE(t.secret, ''), u.created_at
+		FROM users u
+		LEFT JOIN user_totp_secrets t ON t.user_id = u.id
+		WHERE u.id = $1
+	`, id)
+}
+
+func (s *postgresStore) scanUser(ctx context.Context, query string, arg string) (user, error) {
+	var u user
+	err := s.db.QueryRow(ctx, query, arg).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.TOTPSecret, &u.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return user{}, errNotFound
+	}
+	if err != nil {
+		return user{}, err
+	}
+	return u, nil
+}
+
+func (s *postgresStore) CreateCamera(ctx context.Context, userID, name string) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO cameras (id, user_id, name, created_at)
+		VALUES ($1, $2, $3, $4)
+	`, randomID(), userID, strings.TrimSpace(name), time.Now())
+	return err
+}
+
+func (s *postgresStore) CamerasByUser(ctx context.Context, userID string) ([]camera, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id, user_id, name, created_at
+		FROM cameras
+		WHERE user_id = $1
+		ORDER BY created_at ASC
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	cameras := make([]camera, 0)
+	for rows.Next() {
+		var cam camera
+		err = rows.Scan(&cam.ID, &cam.UserID, &cam.Name, &cam.CreatedAt)
+		if err != nil {
+			return nil, err
+		}
+		cameras = append(cameras, cam)
+	}
+	err = rows.Err()
+	if err != nil {
+		return nil, err
+	}
+	return cameras, nil
+}
+
+func (s *postgresStore) Camera(ctx context.Context, userID, cameraID string) (camera, error) {
+	var cam camera
+	err := s.db.QueryRow(ctx, `
+		SELECT id, user_id, name, created_at
+		FROM cameras
+		WHERE id = $1
+	`, cameraID).Scan(&cam.ID, &cam.UserID, &cam.Name, &cam.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return camera{}, errNotFound
+	}
+	if err != nil {
+		return camera{}, err
+	}
+	if cam.UserID != userID {
+		return camera{}, errUnauthorized
+	}
+	return cam, nil
+}
+
+func (s *postgresStore) CreateSession(ctx context.Context, sess session) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO sessions (id, user_id, created_at, expires_at)
+		VALUES ($1, $2, $3, $4)
+	`, sess.ID, sess.UserID, sess.CreatedAt, sess.ExpiresAt)
+	return err
+}
+
+func (s *postgresStore) Session(ctx context.Context, id string) (session, error) {
+	var sess session
+	err := s.db.QueryRow(ctx, `
+		SELECT id, user_id, created_at, expires_at
+		FROM sessions
+		WHERE id = $1
+	`, id).Scan(&sess.ID, &sess.UserID, &sess.CreatedAt, &sess.ExpiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return session{}, errNotFound
+	}
+	if err != nil {
+		return session{}, err
+	}
+	return sess, nil
+}
+
+func (s *postgresStore) DeleteSession(ctx context.Context, id string) error {
+	_, err := s.db.Exec(ctx, `DELETE FROM sessions WHERE id = $1`, id)
+	return err
+}
+
+func (s *postgresStore) AddAudit(ctx context.Context, event auditEvent) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO audit_events (id, user_id, camera_id, event, created_at)
+		VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), $4, $5)
+	`, event.ID, event.UserID, event.CameraID, event.Event, event.CreatedAt)
+	return err
 }
 
 type memoryStore struct {
@@ -633,7 +929,7 @@ func (s *memoryStore) CreateCamera(_ context.Context, userID, name string) error
 	return nil
 }
 
-func (s *memoryStore) CamerasByUser(_ context.Context, userID string) []camera {
+func (s *memoryStore) CamerasByUser(_ context.Context, userID string) ([]camera, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]camera, 0)
@@ -642,7 +938,7 @@ func (s *memoryStore) CamerasByUser(_ context.Context, userID string) []camera {
 			out = append(out, cam)
 		}
 	}
-	return out
+	return out, nil
 }
 
 func (s *memoryStore) Camera(_ context.Context, userID, cameraID string) (camera, error) {
@@ -658,10 +954,11 @@ func (s *memoryStore) Camera(_ context.Context, userID, cameraID string) (camera
 	return cam, nil
 }
 
-func (s *memoryStore) CreateSession(_ context.Context, sess session) {
+func (s *memoryStore) CreateSession(_ context.Context, sess session) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessions[sess.ID] = sess
+	return nil
 }
 
 func (s *memoryStore) Session(_ context.Context, id string) (session, error) {
@@ -674,16 +971,18 @@ func (s *memoryStore) Session(_ context.Context, id string) (session, error) {
 	return sess, nil
 }
 
-func (s *memoryStore) DeleteSession(_ context.Context, id string) {
+func (s *memoryStore) DeleteSession(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, id)
+	return nil
 }
 
-func (s *memoryStore) AddAudit(_ context.Context, event auditEvent) {
+func (s *memoryStore) AddAudit(_ context.Context, event auditEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.audits = append(s.audits, event)
+	return nil
 }
 
 type broker struct {
@@ -1167,3 +1466,42 @@ start().catch(err => status.textContent = err.message);
 </script></body></html>{{end}}
 {{define "css"}}body{margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif;background:#f4f7f5;color:#18211d}a,button{font:inherit}button,a{border:1px solid #18211d;background:#18211d;color:white;text-decoration:none;padding:.7rem 1rem;border-radius:6px;cursor:pointer}input{display:block;width:100%;box-sizing:border-box;margin-top:.35rem;padding:.75rem;border:1px solid #9aa79f;border-radius:6px;background:white}label{display:block;margin:0 0 1rem}.shell{max-width:1040px;margin:0 auto;padding:32px}.narrow{max-width:420px}.panel{background:white;border:1px solid #d8e0db;border-radius:8px;padding:20px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}.actions,.toolbar,header{display:flex;gap:12px;align-items:center;justify-content:space-between}.muted{color:#5c6b63;font-size:.9rem;overflow-wrap:anywhere}.video{background:#111;border-radius:8px;overflow:hidden;aspect-ratio:16/9}video{width:100%;height:100%;object-fit:contain}#status{min-height:1.5rem;color:#334139}@media(max-width:640px){.shell{padding:18px}.actions,.toolbar,header{align-items:stretch;flex-direction:column}} {{end}}
 `
+
+var schemaStatements = []string{
+	`CREATE TABLE IF NOT EXISTS users (
+		id TEXT PRIMARY KEY,
+		email TEXT NOT NULL UNIQUE,
+		password_hash TEXT NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+	)`,
+	`CREATE TABLE IF NOT EXISTS user_totp_secrets (
+		user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+		secret TEXT NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+	)`,
+	`CREATE TABLE IF NOT EXISTS cameras (
+		id TEXT PRIMARY KEY,
+		user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		name TEXT NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+	)`,
+	`CREATE INDEX IF NOT EXISTS cameras_user_id_idx ON cameras(user_id)`,
+	`CREATE TABLE IF NOT EXISTS sessions (
+		id TEXT PRIMARY KEY,
+		user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		expires_at TIMESTAMPTZ NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions(user_id)`,
+	`CREATE INDEX IF NOT EXISTS sessions_expires_at_idx ON sessions(expires_at)`,
+	`CREATE TABLE IF NOT EXISTS audit_events (
+		id TEXT PRIMARY KEY,
+		user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+		camera_id TEXT REFERENCES cameras(id) ON DELETE SET NULL,
+		event TEXT NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+	)`,
+	`CREATE INDEX IF NOT EXISTS audit_events_user_id_idx ON audit_events(user_id)`,
+	`CREATE INDEX IF NOT EXISTS audit_events_camera_id_idx ON audit_events(camera_id)`,
+	`CREATE INDEX IF NOT EXISTS audit_events_created_at_idx ON audit_events(created_at)`,
+}

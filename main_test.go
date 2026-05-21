@@ -37,7 +37,10 @@ func TestCameraLookupRequiresOwner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateCamera: %v", err)
 	}
-	cameras := store.CamerasByUser(ctx, "user-a")
+	cameras, err := store.CamerasByUser(ctx, "user-a")
+	if err != nil {
+		t.Fatalf("CamerasByUser: %v", err)
+	}
 	if len(cameras) != 1 {
 		t.Fatalf("expected one camera, got %d", len(cameras))
 	}
@@ -63,5 +66,22 @@ func TestTURNSharedSecretCredentials(t *testing.T) {
 	}
 	if creds.IceServers[0].Username == "" || creds.IceServers[0].Credential == "" {
 		t.Fatal("expected ephemeral TURN username and credential")
+	}
+}
+
+func TestParseEnvLine(t *testing.T) {
+	key, value, ok := parseEnvLine(`DATABASE_URL="postgres://user:pass@example.test/db?sslmode=require"`)
+	if !ok {
+		t.Fatal("expected env line to parse")
+	}
+	if key != "DATABASE_URL" {
+		t.Fatalf("unexpected key %q", key)
+	}
+	if value != "postgres://user:pass@example.test/db?sslmode=require" {
+		t.Fatalf("unexpected value %q", value)
+	}
+	_, _, ok = parseEnvLine("# DATABASE_URL=hidden")
+	if ok {
+		t.Fatal("comment parsed as env line")
 	}
 }

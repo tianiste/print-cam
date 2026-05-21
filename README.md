@@ -10,6 +10,10 @@ GOCACHE=/tmp/print-cam-gocache go run .
 
 Open `http://localhost:8080/login`.
 
+The app reads `.env` automatically. Set `DATABASE_URL` to your Neon Postgres
+connection string before starting the server. A pooled Neon connection string is
+preferred for deployed app usage.
+
 Default bootstrap account:
 
 - Email: `admin@example.com`
@@ -23,6 +27,7 @@ app.
 ## Configuration
 
 - `ADDR`: listen address, default `:8080`
+- `DATABASE_URL`: Neon Postgres connection string, required
 - `PUBLIC_ORIGIN`: expected browser origin for WebSocket checks, default
   `http://localhost:8080`
 - `SESSION_SECRET`: HMAC key for signed login cookies
@@ -35,12 +40,13 @@ app.
 
 The app now has password plus mandatory TOTP login, HTTP-only signed sessions,
 CSRF checks for mutations, owned cameras, host/viewer pages, WebSocket signaling,
-STUN/TURN ICE configuration, basic rate limits, security headers, and in-memory
-audit/session/signaling state.
+STUN/TURN ICE configuration, basic rate limits, security headers, Neon-backed
+users/cameras/sessions/audit events, and in-memory signaling state.
 
 The media stream is never handled by the Go server. The host browser captures the
 camera and sends encrypted WebRTC media directly to the viewer, using TURN relay
 when the browser ICE negotiation needs it.
 
-Persistent Postgres storage is still the next deployment step; this prototype
-keeps users, cameras, sessions, and audit events in memory.
+On startup the server creates missing Postgres tables and idempotently seeds the
+bootstrap user plus one default camera. The media stream is still never stored in
+Postgres.
