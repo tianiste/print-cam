@@ -90,17 +90,6 @@ func randomID() string {
 	return base64.RawURLEncoding.EncodeToString(b[:])
 }
 
-func parseCameraRole(path string) (string, string, bool) {
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) != 3 || parts[0] != "cameras" {
-		return "", "", false
-	}
-	if parts[2] != "host" && parts[2] != "view" {
-		return "", "", false
-	}
-	return parts[1], parts[2], true
-}
-
 func setCookie(w http.ResponseWriter, name, value string, maxAge time.Duration, secure, httpOnly bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     name,

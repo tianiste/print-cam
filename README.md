@@ -8,7 +8,15 @@ Secure browser-hosted printer camera prototype.
 GOCACHE=/tmp/print-cam-gocache go run .
 ```
 
-Open `http://localhost:8080/login`.
+Start the frontend separately:
+
+```sh
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173/login`.
 
 The app reads `.env` automatically. Set `DATABASE_URL` to your Neon Postgres
 connection string before starting the server. A pooled Neon connection string is
@@ -40,10 +48,11 @@ app.
 
 ## Current Scope
 
-The app now has password plus mandatory TOTP login, HTTP-only signed sessions,
-CSRF checks for mutations, owned cameras, host/viewer pages, WebSocket signaling,
+The backend now has password plus mandatory TOTP login, HTTP-only signed
+sessions, CSRF checks for mutations, owned cameras, WebSocket signaling,
 STUN/TURN ICE configuration, basic rate limits, security headers, Neon-backed
-users/cameras/sessions/audit events, and in-memory signaling state.
+users/cameras/sessions/audit events, and in-memory signaling state. The frontend
+is a separate Vite Vue app in `frontend/` using Tailwind CSS.
 
 The media stream is never handled by the Go server. The host browser captures the
 camera and sends encrypted WebRTC media directly to the viewer, using TURN relay

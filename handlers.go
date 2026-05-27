@@ -36,55 +36,37 @@ func (a *app) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if _, ok := a.currentSession(r); ok {
-		http.Redirect(w, r, "/cameras", http.StatusFound)
-		return
-	}
-	http.Redirect(w, r, "/login", http.StatusFound)
-}
-
-func (a *app) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
 		return
 	}
-	a.render(w, "login", map[string]any{"CSRF": a.ensureCSRF(w, r)})
+	writeJSON(w, http.StatusOK, map[string]string{"service": "print-cam", "status": "ok"})
 }
 
-func (a *app) handleCamerasPage(w http.ResponseWriter, r *http.Request, s session) {
+func (a *app) handleCSRF(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
 		return
 	}
-	cameras, err := a.store.CamerasByUser(r.Context(), s.UserID)
-	if err != nil {
-		a.log.Error("load cameras failed", "error", err)
-		http.Error(w, "load cameras failed", http.StatusInternalServerError)
-		return
-	}
-	a.render(w, "cameras", map[string]any{"CSRF": a.ensureCSRF(w, r), "Cameras": cameras})
+	writeJSON(w, http.StatusOK, map[string]string{"csrfToken": a.ensureCSRF(w, r)})
 }
 
-func (a *app) handleCameraPage(w http.ResponseWriter, r *http.Request, s session) {
+func (a *app) handleMe(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
 		return
 	}
-	id, role, ok := parseCameraRole(r.URL.Path)
+	s, ok := a.currentSession(r)
 	if !ok {
-		http.NotFound(w, r)
+		http.Error(w, "login required", http.StatusUnauthorized)
 		return
 	}
-	cam, err := a.store.Camera(r.Context(), s.UserID, id)
+	user, err := a.store.User(r.Context(), s.UserID)
 	if err != nil {
-		http.NotFound(w, r)
+		http.Error(w, "login required", http.StatusUnauthorized)
 		return
 	}
-	view := "view"
-	if role == "host" {
-		view = "host"
-	}
-	a.render(w, view, map[string]any{"Camera": cam, "CSRF": a.ensureCSRF(w, r)})
+	writeJSON(w, http.StatusOK, map[string]string{"id": user.ID, "email": user.Email})
 }
 
 func (a *app) handleLogin(w http.ResponseWriter, r *http.Request) {

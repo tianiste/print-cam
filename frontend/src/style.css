@@ -1,0 +1,35 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  background: #f5f7f4;
+  color: #16211c;
+}
+
+body {
+  min-width: 320px;
+  margin: 0;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.control {
+  @apply w-full rounded-md border border-line bg-white px-3 py-2 text-sm text-ink outline-none transition focus:border-moss focus:ring-2 focus:ring-moss/20;
+}
+
+.button {
+  @apply inline-flex items-center justify-center rounded-md bg-ink px-4 py-2 text-sm font-medium text-white transition hover:bg-moss disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+.button-secondary {
+  @apply inline-flex items-center justify-center rounded-md border border-line bg-white px-4 py-2 text-sm font-medium text-ink transition hover:border-moss hover:text-moss;
+}
+
+.panel {
+  @apply rounded-lg border border-line bg-white p-5;
+}

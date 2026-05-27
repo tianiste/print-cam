@@ -8,7 +8,6 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
-	"html/template"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -21,7 +20,6 @@ type app struct {
 	log    *slog.Logger
 	store  appStore
 	broker *broker
-	pages  *template.Template
 }
 
 func newApp(cfg config, logger *slog.Logger, store appStore, broker *broker) *app {
@@ -30,7 +28,6 @@ func newApp(cfg config, logger *slog.Logger, store appStore, broker *broker) *ap
 		log:    logger,
 		store:  store,
 		broker: broker,
-		pages:  template.Must(template.New("pages").Parse(pageTemplates)),
 	}
 }
 
@@ -39,9 +36,8 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/", a.handleIndex)
 	mux.HandleFunc("/healthz", a.handleHealth)
 	mux.HandleFunc("/readyz", a.handleReady)
-	mux.HandleFunc("/login", a.handleLoginPage)
-	mux.HandleFunc("/cameras", a.authPage(a.handleCamerasPage))
-	mux.HandleFunc("/cameras/", a.authPage(a.handleCameraPage))
+	mux.HandleFunc("/api/auth/csrf", a.handleCSRF)
+	mux.HandleFunc("/api/auth/me", a.handleMe)
 	mux.HandleFunc("/api/auth/login", a.handleLogin)
 	mux.HandleFunc("/api/auth/totp/verify", a.handleTOTPVerify)
 	mux.HandleFunc("/api/auth/logout", a.authAPI(a.handleLogout))
@@ -85,17 +81,6 @@ func (a *app) setCORSHeaders(w http.ResponseWriter, r *http.Request) bool {
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 	w.Header().Add("Vary", "Origin")
 	return true
-}
-
-func (a *app) authPage(next func(http.ResponseWriter, *http.Request, session)) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		s, ok := a.currentSession(r)
-		if !ok {
-			http.Redirect(w, r, "/login", http.StatusFound)
-			return
-		}
-		next(w, r, s)
-	}
 }
 
 func (a *app) authAPI(next func(http.ResponseWriter, *http.Request, session)) http.HandlerFunc {
@@ -204,14 +189,6 @@ func (a *app) audit(ctx context.Context, userID, cameraID, event string) {
 		a.log.Warn("audit write failed", "error", err)
 	}
 	a.log.Info("audit", "user", userID, "camera", cameraID, "event", event)
-}
-
-func (a *app) render(w http.ResponseWriter, name string, data any) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	err := a.pages.ExecuteTemplate(w, name, data)
-	if err != nil {
-		a.log.Error("render failed", "template", name, "error", err)
-	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -162,6 +162,48 @@ func TestHealthReadyAndCORS(t *testing.T) {
 	}
 }
 
+func TestRootAndRemovedPageRoutes(t *testing.T) {
+	app := testApp(newMemoryStore())
+	handler := app.routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("root status = %d", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/login", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("login page status = %d", rec.Code)
+	}
+}
+
+func TestCSRFAndMe(t *testing.T) {
+	store := newMemoryStore()
+	app := testApp(store)
+	handler := app.routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/csrf", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("csrf status = %d", rec.Code)
+	}
+	if rec.Result().Cookies()[0].Name != csrfCookie {
+		t.Fatalf("expected csrf cookie, got %q", rec.Result().Cookies()[0].Name)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("me without session status = %d", rec.Code)
+	}
+}
+
 func TestAllowedOrigin(t *testing.T) {
 	cfg := config{PublicOrigin: "https://app.example.com", FrontendOrigins: []string{"http://localhost:5173"}}
 	if !cfg.allowedOrigin("https://app.example.com") {
