@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8080'
+const API_BASE = import.meta.env.VITE_API_BASE || window.location.origin
 
 let csrfToken = ''
 
@@ -36,10 +36,10 @@ export async function request(path, options = {}) {
   return res.json()
 }
 
-export async function mutate(path, body) {
+export async function mutate(path, body, method = 'POST') {
   const token = await csrf()
   return request(path, {
-    method: 'POST',
+    method,
     headers: { 'X-CSRF-Token': token },
     body: body === undefined ? undefined : JSON.stringify(body)
   })

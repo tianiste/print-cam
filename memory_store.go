@@ -95,6 +95,35 @@ func (s *memoryStore) Camera(_ context.Context, userID, cameraID string) (camera
 	return cam, nil
 }
 
+func (s *memoryStore) UpdateCameraName(_ context.Context, userID, cameraID, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cam, ok := s.cameras[cameraID]
+	if !ok {
+		return errNotFound
+	}
+	if cam.UserID != userID {
+		return errUnauthorized
+	}
+	cam.Name = strings.TrimSpace(name)
+	s.cameras[cameraID] = cam
+	return nil
+}
+
+func (s *memoryStore) DeleteCamera(_ context.Context, userID, cameraID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cam, ok := s.cameras[cameraID]
+	if !ok {
+		return errNotFound
+	}
+	if cam.UserID != userID {
+		return errUnauthorized
+	}
+	delete(s.cameras, cameraID)
+	return nil
+}
+
 func (s *memoryStore) CreateSession(_ context.Context, sess session) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

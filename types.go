@@ -59,6 +59,10 @@ type createCameraRequest struct {
 	Name string `json:"name"`
 }
 
+type updateCameraRequest struct {
+	Name string `json:"name"`
+}
+
 type turnResponse struct {
 	TTLSeconds int         `json:"ttlSeconds"`
 	IceServers []iceServer `json:"iceServers"`

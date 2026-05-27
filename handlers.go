@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -32,15 +34,44 @@ func (a *app) handleReady(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) handleIndex(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/ws/") {
+		http.NotFound(w, r)
+		return
+	}
+	if a.serveFrontend(w, r) {
+		return
+	}
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
 	}
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w)
-		return
-	}
 	writeJSON(w, http.StatusOK, map[string]string{"service": "print-cam", "status": "ok"})
+}
+
+func (a *app) serveFrontend(w http.ResponseWriter, r *http.Request) bool {
+	if a.cfg.FrontendDistDir == "" {
+		return false
+	}
+	indexPath := filepath.Join(a.cfg.FrontendDistDir, "index.html")
+	_, err := os.Stat(indexPath)
+	if err != nil {
+		return false
+	}
+	requestPath := strings.TrimPrefix(filepath.Clean("/"+r.URL.Path), "/")
+	if requestPath != "" {
+		filePath := filepath.Join(a.cfg.FrontendDistDir, requestPath)
+		info, err := os.Stat(filePath)
+		if err == nil && !info.IsDir() {
+			http.ServeFile(w, r, filePath)
+			return true
+		}
+	}
+	http.ServeFile(w, r, indexPath)
+	return true
 }
 
 func (a *app) handleCSRF(w http.ResponseWriter, r *http.Request) {
@@ -213,8 +244,13 @@ func (a *app) handleCamerasAPI(w http.ResponseWriter, r *http.Request, s session
 }
 
 func (a *app) handleCameraAPI(w http.ResponseWriter, r *http.Request, s session) {
-	cameraID, ok := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, "/api/cameras/"), "/turn-credentials")
-	if !ok || cameraID == "" || r.Method != http.MethodPost {
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/cameras/"), "/")
+	if path == "" {
+		http.NotFound(w, r)
+		return
+	}
+	cameraID, action, _ := strings.Cut(path, "/")
+	if cameraID == "" {
 		http.NotFound(w, r)
 		return
 	}
@@ -222,10 +258,56 @@ func (a *app) handleCameraAPI(w http.ResponseWriter, r *http.Request, s session)
 		http.Error(w, "csrf rejected", http.StatusForbidden)
 		return
 	}
+	if action == "turn-credentials" && r.Method == http.MethodPost {
+		_, err := a.store.Camera(r.Context(), s.UserID, cameraID)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, http.StatusOK, a.turnCredentials(s.UserID))
+		return
+	}
+	if action != "" {
+		http.NotFound(w, r)
+		return
+	}
+	switch r.Method {
+	case http.MethodPost:
+		a.handleUpdateCamera(w, r, s, cameraID)
+	case http.MethodDelete:
+		a.handleDeleteCamera(w, r, s, cameraID)
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+func (a *app) handleUpdateCamera(w http.ResponseWriter, r *http.Request, s session, cameraID string) {
+	var req updateCameraRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil || strings.TrimSpace(req.Name) == "" {
+		http.Error(w, "invalid camera", http.StatusBadRequest)
+		return
+	}
+	err = a.store.UpdateCameraName(r.Context(), s.UserID, cameraID, req.Name)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	a.audit(r.Context(), s.UserID, cameraID, "camera_renamed")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+func (a *app) handleDeleteCamera(w http.ResponseWriter, r *http.Request, s session, cameraID string) {
 	_, err := a.store.Camera(r.Context(), s.UserID, cameraID)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	writeJSON(w, http.StatusOK, a.turnCredentials(s.UserID))
+	a.audit(r.Context(), s.UserID, cameraID, "camera_deleted")
+	err = a.store.DeleteCamera(r.Context(), s.UserID, cameraID)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }

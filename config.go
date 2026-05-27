@@ -9,11 +9,18 @@ import (
 	"strings"
 )
 
+const (
+	defaultBootstrapEmail = "admin@example.com"
+	defaultBootstrapPass  = "change-me-now"
+	defaultBootstrapTOTP  = "JBSWY3DPEHPK3PXP"
+)
+
 type config struct {
 	Addr             string
 	PublicOrigin     string
 	FrontendOrigins  []string
 	DatabaseURL      string
+	FrontendDistDir  string
 	SessionSecret    []byte
 	SessionSecretSet bool
 	SessionSecretLen int
@@ -45,6 +52,7 @@ func loadConfig() config {
 		PublicOrigin:     strings.TrimRight(origin, "/"),
 		FrontendOrigins:  splitCSV(getenv("FRONTEND_ORIGINS", "http://localhost:5173")),
 		DatabaseURL:      os.Getenv("DATABASE_URL"),
+		FrontendDistDir:  getenv("FRONTEND_DIST_DIR", "frontend/dist"),
 		SessionSecret:    secret,
 		SessionSecretSet: secretSet,
 		SessionSecretLen: len(secretRaw),
@@ -52,9 +60,9 @@ func loadConfig() config {
 		TURNRealm:        getenv("TURN_REALM", "print-cam"),
 		TURNURLs:         splitCSV(os.Getenv("TURN_URLS")),
 		SecureCookies:    parsed != nil && parsed.Scheme == "https",
-		BootstrapEmail:   getenv("BOOTSTRAP_EMAIL", "admin@example.com"),
-		BootstrapPass:    getenv("BOOTSTRAP_PASSWORD", "change-me-now"),
-		BootstrapTOTP:    getenv("BOOTSTRAP_TOTP_SECRET", "JBSWY3DPEHPK3PXP"),
+		BootstrapEmail:   getenv("BOOTSTRAP_EMAIL", defaultBootstrapEmail),
+		BootstrapPass:    getenv("BOOTSTRAP_PASSWORD", defaultBootstrapPass),
+		BootstrapTOTP:    getenv("BOOTSTRAP_TOTP_SECRET", defaultBootstrapTOTP),
 	}
 }
 
@@ -65,8 +73,14 @@ func (c config) validate() error {
 	if c.SecureCookies && (!c.SessionSecretSet || c.SessionSecretLen < 32) {
 		return errors.New("SESSION_SECRET must be set to at least 32 bytes for HTTPS origins")
 	}
-	if c.SecureCookies && c.BootstrapPass == "change-me-now" {
+	if c.SecureCookies && c.BootstrapEmail == defaultBootstrapEmail {
+		return errors.New("BOOTSTRAP_EMAIL must be changed for HTTPS origins")
+	}
+	if c.SecureCookies && c.BootstrapPass == defaultBootstrapPass {
 		return errors.New("BOOTSTRAP_PASSWORD must be changed for HTTPS origins")
+	}
+	if c.SecureCookies && normalizeBase32(c.BootstrapTOTP) == defaultBootstrapTOTP {
+		return errors.New("BOOTSTRAP_TOTP_SECRET must be changed for HTTPS origins")
 	}
 	if c.PublicOrigin == "" {
 		return errors.New("PUBLIC_ORIGIN is required")

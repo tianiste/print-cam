@@ -8,11 +8,13 @@ const cameras = ref([])
 const name = ref('')
 const status = ref('')
 const busy = ref(false)
+const editing = ref({})
 
 async function load() {
   try {
     await request('/api/auth/me')
     cameras.value = await request('/api/cameras')
+    editing.value = Object.fromEntries(cameras.value.map((camera) => [camera.id, camera.name]))
   } catch (err) {
     router.push('/login')
   }
@@ -26,6 +28,37 @@ async function addCamera() {
     await mutate('/api/cameras', { name: name.value.trim() })
     name.value = ''
     await load()
+  } catch (err) {
+    status.value = err.message
+  } finally {
+    busy.value = false
+  }
+}
+
+async function renameCamera(camera) {
+  const nextName = (editing.value[camera.id] || '').trim()
+  if (!nextName || nextName === camera.name) return
+  busy.value = true
+  status.value = ''
+  try {
+    await mutate(`/api/cameras/${camera.id}`, { name: nextName })
+    await load()
+    status.value = 'Camera updated.'
+  } catch (err) {
+    status.value = err.message
+  } finally {
+    busy.value = false
+  }
+}
+
+async function deleteCamera(camera) {
+  if (!confirm(`Delete ${camera.name}?`)) return
+  busy.value = true
+  status.value = ''
+  try {
+    await mutate(`/api/cameras/${camera.id}`, undefined, 'DELETE')
+    await load()
+    status.value = 'Camera deleted.'
   } catch (err) {
     status.value = err.message
   } finally {
@@ -63,7 +96,16 @@ onMounted(load)
 
       <section class="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <article v-for="camera in cameras" :key="camera.id" class="panel">
-          <h2 class="text-lg font-semibold text-ink">{{ camera.name }}</h2>
+          <form class="space-y-3" @submit.prevent="renameCamera(camera)">
+            <label class="block text-sm font-medium text-ink">
+              Camera name
+              <input v-model="editing[camera.id]" class="control mt-2" required />
+            </label>
+            <div class="flex gap-2">
+              <button class="button-secondary" :disabled="busy || editing[camera.id] === camera.name">Save</button>
+              <button class="button-secondary border-red-200 text-red-700 hover:border-red-400 hover:text-red-800" type="button" :disabled="busy" @click="deleteCamera(camera)">Delete</button>
+            </div>
+          </form>
           <p class="mt-2 break-all text-xs text-ink/50">{{ camera.id }}</p>
           <div class="mt-5 flex gap-2">
             <router-link class="button" :to="`/cameras/${camera.id}/host`">Host</router-link>

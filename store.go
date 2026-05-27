@@ -17,6 +17,8 @@ type appStore interface {
 	CreateCamera(context.Context, string, string) error
 	CamerasByUser(context.Context, string) ([]camera, error)
 	Camera(context.Context, string, string) (camera, error)
+	UpdateCameraName(context.Context, string, string, string) error
+	DeleteCamera(context.Context, string, string) error
 	CreateSession(context.Context, session) error
 	Session(context.Context, string) (session, error)
 	DeleteSession(context.Context, string) error
@@ -145,6 +147,31 @@ func (s *postgresStore) Camera(ctx context.Context, userID, cameraID string) (ca
 		return camera{}, errUnauthorized
 	}
 	return cam, nil
+}
+
+func (s *postgresStore) UpdateCameraName(ctx context.Context, userID, cameraID, name string) error {
+	_, err := s.Camera(ctx, userID, cameraID)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(ctx, `
+		UPDATE cameras
+		SET name = $1
+		WHERE id = $2 AND user_id = $3
+	`, strings.TrimSpace(name), cameraID, userID)
+	return err
+}
+
+func (s *postgresStore) DeleteCamera(ctx context.Context, userID, cameraID string) error {
+	_, err := s.Camera(ctx, userID, cameraID)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(ctx, `
+		DELETE FROM cameras
+		WHERE id = $1 AND user_id = $2
+	`, cameraID, userID)
+	return err
 }
 
 func (s *postgresStore) CreateSession(ctx context.Context, sess session) error {
